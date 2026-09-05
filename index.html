@@ -68,6 +68,7 @@
 
   body {
     margin: 0;
+    padding-top: 10px; /* keeps the navbar from sitting flush against the very top edge */
     background: var(--bg);
     color: var(--dark);
     font-family: 'Stara', 'Archivo', sans-serif;
@@ -367,6 +368,7 @@
   .outfit-preview {
     position: relative;
     width: 100%;
+    aspect-ratio: 3 / 4; /* fixed portrait ratio so every outfit preview is the same shape */
     background: #F7F7F5;
     overflow: hidden;
   }
@@ -384,12 +386,13 @@
   .outfit-tags { font-size: 16px; color: var(--blue); }
 
   /* ---------- COMPOSE PAGE ---------- */
-  .compose-layout { display: flex; gap: 24px; flex-wrap: wrap-reverse; align-items: flex-start; }
+  .compose-layout { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
   .canvas-wrap { flex: 1 1 380px; position: relative; }
   .canvas {
     height: 560px;
     background: var(--white);
     border-radius: var(--radius-lg);
+    border: 1px solid var(--blue);
     padding: 0;
     position: relative;   /* everything inside is positioned relative to this box */
     overflow: hidden;     /* dragged items can't visually escape the canvas */
@@ -541,30 +544,45 @@
   <!-- ===== COMPOSE PAGE ===== -->
   <section id="page-compose" style="display:none;">
     <div class="page-title-row">
-      <h1>Compose an outfit</h1>
+      <div style="display:flex; align-items:center; gap:14px;">
+        <button class="btn-secondary" id="composeBackBtn" style="display:flex; align-items:center; gap:6px;"><i data-lucide="arrow-left"></i> back</button>
+        <h1>Compose an outfit</h1>
+      </div>
       <button class="btn-primary" id="openSaveOutfit">save outfit</button>
     </div>
 
     <div class="compose-layout">
-      <div class="canvas-wrap">
+      <div class="canvas-wrap" style="align-self: flex-start;">
         <div class="canvas" id="composeCanvas">
           <p class="canvas-hint" id="canvasHint">Tap pieces on the right to add them to this look.</p>
         </div>
         <button class="btn-primary clear-canvas-btn" id="clearCanvasBtn"><i data-lucide="trash-2"></i> clear canvas</button>
       </div>
 
-      <div class="compose-sidebar">
-        <div class="chip-row" id="composeCategoryChips">
-          <button class="chip active" data-cat="all">All</button>
-          <button class="chip" data-cat="accessories">accessories</button>
-          <button class="chip" data-cat="shoes">shoes</button>
-          <button class="chip" data-cat="bottoms">bottoms</button>
-          <button class="chip" data-cat="tops">tops</button>
-          <button class="chip" data-cat="full body">full body</button>
-          <button class="chip" data-cat="outdoor">outdoor</button>
+      <div class="compose-sidebar" style="align-self: flex-start;">
+        <div class="filter-row" style="justify-content: space-between; align-items: flex-start;">
+          <div class="chip-row" id="composeCategoryChips" style="margin-bottom: 0;">
+            <button class="chip active" data-cat="all">All</button>
+            <button class="chip" data-cat="accessories">accessories</button>
+            <button class="chip" data-cat="shoes">shoes</button>
+            <button class="chip" data-cat="bottoms">bottoms</button>
+            <button class="chip" data-cat="tops">tops</button>
+            <button class="chip" data-cat="full body">full body</button>
+            <button class="chip" data-cat="outdoor">outdoor</button>
+          </div>
+          <div class="dropdown-wrap">
+            <button class="btn-secondary" id="composeColorFilterBtn" style="display:flex; align-items:center; gap:6px; white-space:nowrap;">
+              color filter <i data-lucide="chevron-down"></i>
+            </button>
+            <div class="dropdown-panel" id="composeColorFilterPanel" style="left:auto; right:0; min-width:340px; max-height:360px; overflow-y:auto;">
+              <div class="color-grid" id="composeColorFilterGrid"></div>
+            </div>
+          </div>
         </div>
+        <div class="chip-row" id="composeSubCategoryChips" style="display:none;"></div>
         <div class="grid" id="composeGrid"></div>
       </div>
+
     </div>
   </section>
 
@@ -603,13 +621,24 @@
   </div>
 </div>
 
+<!-- ===== OUTFIT DETAIL MODAL — a larger view of a saved outfit ===== -->
+<div class="modal-overlay" id="outfitDetailOverlay">
+  <div class="modal" style="max-width: 480px;">
+    <button class="modal-close" id="closeOutfitDetail"><i data-lucide="x"></i></button>
+    <div id="outfitDetailPreview" style="border-radius: var(--radius-lg); overflow: hidden; margin-bottom: 16px;"></div>
+    <p class="card-name" id="outfitDetailName" style="font-size: 24px;"></p>
+    <p class="card-meta">weather: <span class="outfit-weather" id="outfitDetailWeather"></span></p>
+    <p class="outfit-tags">tags: <span id="outfitDetailTags"></span></p>
+  </div>
+</div>
+
 <!-- ===== SHARED MINI DIALOG (replaces alert/confirm/prompt) =====
      Native browser dialogs (alert, confirm, prompt) are unreliable inside
      iOS home-screen web apps — this stands in for all three, styled to
      match the rest of the app, and works everywhere the app runs. -->
 <div class="modal-overlay" id="miniDialogOverlay">
   <div class="modal" style="max-width: 420px;">
-    <p id="miniDialogMessage" style="font-size:16px; color:var(--dark); font-weight:700; margin:0 0 16px;"></p>
+    <p id="miniDialogMessage" style="font-size:16px; color:var(--blue); font-weight:700; margin:0 0 16px;"></p>
     <input type="text" id="miniDialogInput" style="display:none; margin-bottom:16px;">
     <div class="modal-actions">
       <button class="btn-secondary" id="miniDialogCancel">cancel</button>
@@ -1109,7 +1138,9 @@ function pruneUnusedCustomTags() {
 let outfits = loadOutfits();
 let availableTags = loadTags();
 
-let composeCategory = 'all';      // which chip is active in the compose sidebar
+let composeCategory = 'all';        // which top-level chip is active in the compose sidebar
+let composeSubCategory = 'all';     // which subcategory chip is active (like the Wardrobe page)
+let composeColorFilterActive = [];  // color filter selections in the compose sidebar
 
 // Each entry: { id, x, y, width, height, z } — id is the wardrobe piece's id,
 // x/y/width/height describe where it sits on the canvas and how big it is,
@@ -1129,12 +1160,24 @@ let tagFilterActive = [];         // tag filter selections on the Outfits page
 document.getElementById('openCompose').addEventListener('click', () => {
   canvasItems = [];
   composeCategory = 'all';
+  composeSubCategory = 'all';
+  composeColorFilterActive = [];
   document.querySelectorAll('#composeCategoryChips .chip').forEach(c =>
     c.classList.toggle('active', c.dataset.cat === 'all')
   );
+  renderComposeSubCategoryChips();
+  renderComposeColorFilterGrid();
   renderCanvas();
   renderComposeGrid();
   showPage('compose');
+});
+
+document.getElementById('composeBackBtn').addEventListener('click', async () => {
+  if (canvasItems.length > 0) {
+    const ok = await showConfirmDialog('Go back without saving this outfit? Anything on the canvas will be lost.');
+    if (!ok) return;
+  }
+  showPage('outfits');
 });
 
 document.getElementById('clearCanvasBtn').addEventListener('click', async () => {
@@ -1152,12 +1195,69 @@ document.getElementById('composeCategoryChips').addEventListener('click', (e) =>
   document.querySelectorAll('#composeCategoryChips .chip').forEach(c => c.classList.remove('active'));
   chip.classList.add('active');
   composeCategory = chip.dataset.cat;
+  composeSubCategory = 'all';
+  renderComposeSubCategoryChips();
   renderComposeGrid();
 });
 
+// Same drill-down pattern as the Wardrobe page: picking a top-level
+// category reveals its subcategories in a second row underneath.
+function renderComposeSubCategoryChips() {
+  const row = document.getElementById('composeSubCategoryChips');
+  const subs = CATEGORIES[composeCategory];
+
+  if (composeCategory === 'all' || !subs) {
+    row.style.display = 'none';
+    row.innerHTML = '';
+    return;
+  }
+
+  row.style.display = 'flex';
+  row.innerHTML = '';
+  subs.forEach(sub => {
+    const chip = document.createElement('button');
+    chip.className = 'chip' + (sub === composeSubCategory ? ' active' : '');
+    chip.textContent = sub;
+    chip.addEventListener('click', () => {
+      composeSubCategory = (composeSubCategory === sub) ? 'all' : sub;
+      renderComposeSubCategoryChips();
+      renderComposeGrid();
+    });
+    row.appendChild(chip);
+  });
+}
+
+// Same rounded-swatch color filter as the Wardrobe page, scoped to this page.
+document.getElementById('composeColorFilterBtn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  document.getElementById('composeColorFilterPanel').classList.toggle('open');
+});
+function renderComposeColorFilterGrid() {
+  const wrap = document.getElementById('composeColorFilterGrid');
+  wrap.innerHTML = '';
+  COLORS.forEach(([name, hex]) => {
+    const opt = document.createElement('div');
+    opt.className = 'color-opt' + (composeColorFilterActive.includes(name) ? ' selected' : '');
+    opt.innerHTML = `<div class="dot" style="background:${hex}"></div><span>${name}</span>`;
+    opt.addEventListener('click', () => {
+      const i = composeColorFilterActive.indexOf(name);
+      if (i > -1) composeColorFilterActive.splice(i, 1);
+      else composeColorFilterActive.push(name);
+      renderComposeColorFilterGrid();
+      renderComposeGrid();
+    });
+    wrap.appendChild(opt);
+  });
+}
+
 function renderComposeGrid() {
   const grid = document.getElementById('composeGrid');
-  const items = wardrobe.filter(i => composeCategory === 'all' || i.topCategory === composeCategory);
+  const items = wardrobe.filter(i => {
+    const topOk = composeCategory === 'all' || i.topCategory === composeCategory;
+    const subOk = composeSubCategory === 'all' || i.subCategory === composeSubCategory;
+    const colorOk = composeColorFilterActive.length === 0 || i.colors.some(c => composeColorFilterActive.includes(c));
+    return topOk && subOk && colorOk;
+  });
   grid.innerHTML = '';
   items.forEach(item => {
     const onCanvas = canvasItems.some(ci => ci.id === item.id);
@@ -1463,6 +1563,7 @@ function renderOutfits() {
 
     const card = document.createElement('div');
     card.className = 'card';
+    card.dataset.outfitId = outfit.id;
     card.innerHTML = `
       ${buildOutfitPreviewHTML(outfit)}
       <button class="card-delete" data-id="${outfit.id}"><i data-lucide="x"></i></button>
@@ -1494,7 +1595,7 @@ function buildOutfitPreviewHTML(outfit) {
       const hPct = (li.height / ch) * 100;
       return `<img src="${piece.photo}" style="position:absolute; left:${leftPct}%; top:${topPct}%; width:${wPct}%; height:${hPct}%; z-index:${li.z || 0};">`;
     }).join('');
-    return `<div class="outfit-preview" style="aspect-ratio:${cw}/${ch};">${items}</div>`;
+    return `<div class="outfit-preview">${items}</div>`;
   }
 
   // fallback for outfits without saved layout info
@@ -1507,13 +1608,41 @@ function buildOutfitPreviewHTML(outfit) {
 
 document.getElementById('outfitsGrid').addEventListener('click', async (e) => {
   const del = e.target.closest('.card-delete');
-  if (!del) return;
-  const ok = await showConfirmDialog('Delete this outfit? This can\'t be undone.');
-  if (!ok) return;
-  outfits = outfits.filter(o => o.id !== del.dataset.id);
-  saveOutfits(outfits);
-  pruneUnusedCustomTags(); // drop any custom tag no outfit uses anymore; the 10 defaults always stay
-  renderOutfits();
+  if (del) {
+    const ok = await showConfirmDialog('Delete this outfit? This can\'t be undone.');
+    if (!ok) return;
+    outfits = outfits.filter(o => o.id !== del.dataset.id);
+    saveOutfits(outfits);
+    pruneUnusedCustomTags(); // drop any custom tag no outfit uses anymore; the 10 defaults always stay
+    renderOutfits();
+    return;
+  }
+
+  const card = e.target.closest('.card');
+  if (card) openOutfitDetail(card.dataset.outfitId);
+});
+
+function openOutfitDetail(outfitId) {
+  const outfit = outfits.find(o => o.id === outfitId);
+  if (!outfit) return;
+
+  const weatherIcons = outfit.weather.map(key => {
+    const w = WEATHER.find(w => w.key === key);
+    return w ? `<i data-lucide="${w.icon}"></i>` : '';
+  }).join(' ');
+
+  document.getElementById('outfitDetailPreview').innerHTML = buildOutfitPreviewHTML(outfit);
+  document.getElementById('outfitDetailName').textContent = outfit.name;
+  document.getElementById('outfitDetailWeather').innerHTML = weatherIcons || '—';
+  document.getElementById('outfitDetailTags').textContent = outfit.tags.join(', ') || '—';
+  document.getElementById('outfitDetailOverlay').classList.add('open');
+  if (window.lucide) lucide.createIcons();
+}
+document.getElementById('closeOutfitDetail').addEventListener('click', () => {
+  document.getElementById('outfitDetailOverlay').classList.remove('open');
+});
+document.getElementById('outfitDetailOverlay').addEventListener('click', (e) => {
+  if (e.target.id === 'outfitDetailOverlay') document.getElementById('outfitDetailOverlay').classList.remove('open');
 });
 
 // --- weather filter dropdown ---
