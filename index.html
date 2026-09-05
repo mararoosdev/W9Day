@@ -438,6 +438,69 @@
   .compose-sidebar .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   .compose-sidebar .card { cursor: pointer; }
   .compose-sidebar .card.added { outline: 3px solid var(--blue); }
+
+  /* ---------- RANDOMIZE PAGE ---------- */
+  .randomize-grid { display: flex; flex-wrap: wrap; gap: 24px; margin-top: 24px; }
+  .randomize-tile-wrap { display: flex; flex-direction: column; align-items: center; gap: 16px; flex: 1 1 300px; max-width: 400px; }
+  .randomize-tile {
+    background: var(--card-bg);
+    border-radius: var(--radius-lg);
+    padding: 26px 16px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    width: 100%;
+    position: relative;
+    box-sizing: border-box;
+  }
+  .randomize-image-box {
+    background: var(--card-bg);
+    border-radius: 12px;
+    flex: 1;
+    height: 241px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .randomize-image-box img { width: 100%; height: 100%; object-fit: contain; }
+  .randomize-arrow-btn {
+    width: 39px; height: 39px; border-radius: 50%;
+    background: var(--blue); color: var(--white); border: none;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; flex-shrink: 0;
+  }
+  .randomize-label { font-size: 24px; color: var(--blue); font-weight: 700; text-align: center; margin: 0; }
+  .randomize-add-tile {
+    background: var(--card-bg);
+    border-radius: var(--radius-lg);
+    flex: 1 1 300px;
+    max-width: 400px;
+    min-height: 293px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .randomize-remove-btn {
+    position: absolute; top: 8px; right: 8px;
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--white); border: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .randomize-remove-btn svg { width: 14px; height: 14px; }
+  .randomize-actions-tile {
+    background: var(--white);
+    border-radius: var(--radius-lg);
+    padding: 26px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    flex: 1 1 300px;
+    max-width: 400px;
+    min-height: 293px;
+  }
 </style>
 </head>
 <body>
@@ -586,12 +649,22 @@
     </div>
   </section>
 
-  <!-- ===== RANDOMIZE PAGE (placeholder — built next) ===== -->
+  <!-- ===== RANDOMIZE PAGE ===== -->
   <section id="page-randomize" style="display:none;">
-    <h1>Randomize</h1>
-    <p style="opacity:0.6; font-weight:700;">We'll build this next — shuffle through outfit combinations.</p>
+    <div class="page-title-row">
+      <h1>Randomize</h1>
+    </div>
+    <div class="randomize-grid" id="randomizeGrid"></div>
   </section>
 </main>
+
+<!-- ===== ADD CATEGORY MODAL (Randomize page) ===== -->
+<div class="modal-overlay" id="addCategoryOverlay">
+  <div class="modal" style="max-width: 560px;">
+    <div id="addCategoryPicker"></div>
+    <button class="btn-primary" id="addCategoryDoneBtn" style="width:100%; justify-content:center; margin-top:20px;">add category</button>
+  </div>
+</div>
 
 <!-- ===== SAVE OUTFIT MODAL ===== -->
 <div class="modal-overlay" id="saveOutfitOverlay">
@@ -838,8 +911,11 @@ function showPage(target) {
   });
 }
 
-document.querySelectorAll('.nav-btn').forEach(btn => {
-  btn.addEventListener('click', () => showPage(btn.dataset.page));
+document.querySelectorAll('.nav-btn[data-page]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    showPage(btn.dataset.page);
+    if (btn.dataset.page === 'randomize') renderRandomizeGrid();
+  });
 });
 
 /* =========================================================
@@ -1422,6 +1498,184 @@ function makeResizable(handle, el, ci) {
 }
 
 /* =========================================================
+   RANDOMIZE PAGE
+   Three fixed slots (tops/bottoms/shoes) plus up to 2 extra
+   slots you choose the category for via "+ add category".
+   Each slot cycles through your wardrobe items in that
+   category with the arrow buttons; "ramdomize" jumps every
+   slot to a new random item at once.
+   ========================================================= */
+const RANDOMIZE_FIXED = ['tops', 'bottoms', 'shoes']; // topCategory keys — always present, not removable
+let randomizeExtraSlots = [null, null];               // each is either a subCategory string or null (empty "+" slot)
+let randomizeIndices = {};                             // key (topCategory or subCategory) -> current index into its filtered items
+let randomizeAddTargetIndex = null;                    // which extra slot the "add category" modal is currently filling
+
+function randomizeItemsFor(key, matchType) {
+  return wardrobe.filter(w => matchType === 'top' ? w.topCategory === key : w.subCategory === key);
+}
+
+function buildRandomizeTile(key, matchType, removable, extraIndex) {
+  const items = randomizeItemsFor(key, matchType);
+  if (items.length) {
+    // wrap the index into range (handles both empty->populated transitions and negative steps from the left arrow)
+    randomizeIndices[key] = ((randomizeIndices[key] || 0) % items.length + items.length) % items.length;
+  }
+  const current = items[randomizeIndices[key] || 0];
+
+  const wrap = document.createElement('div');
+  wrap.className = 'randomize-tile-wrap';
+
+  const tile = document.createElement('div');
+  tile.className = 'randomize-tile';
+
+  const imgHtml = current
+    ? (current.photo ? `<img src="${current.photo}">` : `<div class="placeholder">no photo</div>`)
+    : `<span style="color:#B9B9B4; font-weight:700; font-size:14px; text-align:center; padding:0 12px;">no ${key} yet</span>`;
+
+  tile.innerHTML = `
+    <button class="randomize-arrow-btn" data-dir="-1"><i data-lucide="chevron-left"></i></button>
+    <div class="randomize-image-box">${imgHtml}</div>
+    <button class="randomize-arrow-btn" data-dir="1"><i data-lucide="chevron-right"></i></button>
+    ${removable ? `<button class="randomize-remove-btn"><i data-lucide="x"></i></button>` : ''}
+  `;
+
+  tile.querySelectorAll('.randomize-arrow-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      randomizeIndices[key] = (randomizeIndices[key] || 0) + parseInt(btn.dataset.dir, 10);
+      renderRandomizeGrid();
+    });
+  });
+  const removeBtn = tile.querySelector('.randomize-remove-btn');
+  if (removeBtn) {
+    removeBtn.addEventListener('click', () => {
+      randomizeExtraSlots[extraIndex] = null;
+      renderRandomizeGrid();
+    });
+  }
+
+  const label = document.createElement('p');
+  label.className = 'randomize-label';
+  label.textContent = key;
+
+  wrap.appendChild(tile);
+  wrap.appendChild(label);
+  return wrap;
+}
+
+function buildAddCategoryTile(extraIndex) {
+  const tile = document.createElement('div');
+  tile.className = 'randomize-add-tile';
+  tile.innerHTML = `<button class="randomize-arrow-btn"><i data-lucide="plus"></i></button>`;
+  tile.querySelector('button').addEventListener('click', () => openAddCategoryModal(extraIndex));
+  return tile;
+}
+
+function renderRandomizeGrid() {
+  const grid = document.getElementById('randomizeGrid');
+  grid.innerHTML = '';
+
+  RANDOMIZE_FIXED.forEach(key => grid.appendChild(buildRandomizeTile(key, 'top', false)));
+  randomizeExtraSlots.forEach((subCat, i) => {
+    grid.appendChild(subCat ? buildRandomizeTile(subCat, 'sub', true, i) : buildAddCategoryTile(i));
+  });
+
+  const actionsTile = document.createElement('div');
+  actionsTile.className = 'randomize-actions-tile';
+  actionsTile.innerHTML = `
+    <button class="btn-primary" id="randomizeAllBtn"><i data-lucide="shuffle"></i> ramdomize</button>
+    <button class="btn-primary" id="randomizeSaveBtn">save outfit</button>
+  `;
+  grid.appendChild(actionsTile);
+  document.getElementById('randomizeAllBtn').addEventListener('click', randomizeAllSlots);
+  document.getElementById('randomizeSaveBtn').addEventListener('click', saveRandomizedOutfit);
+
+  if (window.lucide) lucide.createIcons();
+}
+
+function randomizeAllSlots() {
+  RANDOMIZE_FIXED.forEach(key => {
+    const items = randomizeItemsFor(key, 'top');
+    if (items.length) randomizeIndices[key] = Math.floor(Math.random() * items.length);
+  });
+  randomizeExtraSlots.forEach(subCat => {
+    if (!subCat) return;
+    const items = randomizeItemsFor(subCat, 'sub');
+    if (items.length) randomizeIndices[subCat] = Math.floor(Math.random() * items.length);
+  });
+  renderRandomizeGrid();
+}
+
+// Builds the currently-shown combination into canvasItems (simple grid
+// layout, since there's no drag canvas on this page) and then just
+// triggers the exact same "save outfit" button Compose uses — same
+// modal, same weather/tag picker, same save logic, no duplication.
+function saveRandomizedOutfit() {
+  const selected = [];
+  RANDOMIZE_FIXED.forEach(key => {
+    const items = randomizeItemsFor(key, 'top');
+    if (items.length) selected.push(items[randomizeIndices[key] || 0]);
+  });
+  randomizeExtraSlots.forEach(subCat => {
+    if (!subCat) return;
+    const items = randomizeItemsFor(subCat, 'sub');
+    if (items.length) selected.push(items[randomizeIndices[subCat] || 0]);
+  });
+  if (selected.length === 0) { showAlertDialog('Add at least one piece to your wardrobe first.'); return; }
+
+  canvasItems = selected.map((item, i) => ({
+    id: item.id,
+    x: 30 + (i % 3) * 170, y: 30 + Math.floor(i / 3) * 170,
+    width: 160, height: 160, z: i + 1
+  }));
+  topZ = canvasItems.length + 1;
+
+  document.getElementById('openSaveOutfit').click(); // reuses Compose's Save Outfit flow exactly
+}
+
+/* --- "add category" modal: choose which subcategory fills an extra slot --- */
+function buildAddCategoryPicker() {
+  const wrap = document.getElementById('addCategoryPicker');
+  wrap.innerHTML = '';
+  Object.entries(CATEGORIES).forEach(([group, subs]) => {
+    if (RANDOMIZE_FIXED.includes(group)) return; // tops/bottoms/shoes are already fixed slots
+    const title = document.createElement('div');
+    title.className = 'cat-group-title';
+    title.style.fontSize = '20px';
+    title.textContent = group;
+    wrap.appendChild(title);
+
+    const row = document.createElement('div');
+    row.className = 'chip-row';
+    subs.forEach(sub => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'chip';
+      chip.textContent = sub;
+      chip.addEventListener('click', () => {
+        if (randomizeAddTargetIndex !== null) randomizeExtraSlots[randomizeAddTargetIndex] = sub;
+        document.getElementById('addCategoryOverlay').classList.remove('open');
+        renderRandomizeGrid();
+      });
+      row.appendChild(chip);
+    });
+    wrap.appendChild(row);
+  });
+  if (window.lucide) lucide.createIcons();
+}
+
+function openAddCategoryModal(extraIndex) {
+  randomizeAddTargetIndex = extraIndex;
+  buildAddCategoryPicker();
+  document.getElementById('addCategoryOverlay').classList.add('open');
+}
+document.getElementById('addCategoryDoneBtn').addEventListener('click', () => {
+  document.getElementById('addCategoryOverlay').classList.remove('open');
+});
+document.getElementById('addCategoryOverlay').addEventListener('click', (e) => {
+  if (e.target.id === 'addCategoryOverlay') document.getElementById('addCategoryOverlay').classList.remove('open');
+});
+
+/* =========================================================
    SAVE OUTFIT MODAL
    ========================================================= */
 const saveOutfitOverlay = document.getElementById('saveOutfitOverlay');
@@ -1526,12 +1780,18 @@ document.getElementById('confirmSaveOutfit').addEventListener('click', () => {
   const name = document.getElementById('outfitName').value.trim()
     || `outfit #${nextDefaultNumber(outfits.map(o => o.name), 'outfit')}`;
   const canvasRect = document.getElementById('composeCanvas').getBoundingClientRect();
+  // The canvas is hidden (0x0) when saving from the Randomize page rather
+  // than Compose, since that page's section isn't visible — fall back to
+  // a sensible fixed size so the preview math below never divides by zero.
+  const canvasSize = (canvasRect.width && canvasRect.height)
+    ? { width: canvasRect.width, height: canvasRect.height }
+    : { width: 560, height: 560 };
   outfits.push({
     id: Date.now().toString(),
     name,
     pieceIds: canvasItems.map(ci => ci.id),
-    layout: canvasItems.slice(),                                  // x/y/width/height/z per piece
-    canvasSize: { width: canvasRect.width, height: canvasRect.height }, // so the layout can be scaled to any preview size later
+    layout: canvasItems.slice(),   // x/y/width/height/z per piece
+    canvasSize,                     // so the layout can be scaled to any preview size later
     weather: draftWeather.slice(),
     tags: draftTags.slice()
   });
