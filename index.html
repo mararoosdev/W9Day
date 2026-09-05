@@ -29,6 +29,12 @@
 <script src="https://cdn.jsdelivr.net/npm/lucide@1.38.0/dist/umd/lucide.js"
         onerror="this.onerror=null; var s=document.createElement('script'); s.src='https://unpkg.com/lucide@1.38.0/dist/umd/lucide.js'; s.onload=function(){ if(window.lucide) lucide.createIcons(); }; document.head.appendChild(s);"></script>
 
+<!-- Supabase: handles login and cloud storage for your wardrobe data,
+     so it's the same across every device you sign into. Pinned version,
+     same jsDelivr-then-unpkg fallback pattern as Lucide above. -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.115.0/dist/umd/supabase.js"
+        onerror="this.onerror=null; var s=document.createElement('script'); s.src='https://unpkg.com/@supabase/supabase-js@2.115.0/dist/umd/supabase.js'; document.head.appendChild(s);"></script>
+
 <style>
   /* ---------- YOUR BRAND FONT ----------
      Embedded directly as base64 so this stays a single file —
@@ -287,7 +293,7 @@
   .upload-box span { color: rgba(0,0,255,0.3); font-weight: 700; font-size: 16px; text-align: center; } /* confirmed: faded blue, not grey */
   .upload-box img { width: 100%; height: 100%; object-fit: contain; }
 
-  input[type="text"], select {
+  input[type="text"], input[type="password"], select {
     width: 100%;
     padding: 10px 16px;
     border-radius: 4px; /* confirmed from Figma: much tighter than other elements */
@@ -297,7 +303,7 @@
     font-size: 16px;
     color: var(--blue);
   }
-  input[type="text"]::placeholder { color: rgba(0,0,255,0.3); } /* confirmed: faded blue placeholder */
+  input[type="text"]::placeholder, input[type="password"]::placeholder { color: rgba(0,0,255,0.3); } /* confirmed: faded blue placeholder */
 
   select {
     /* Native select arrows sit right at the edge with no control over their
@@ -433,12 +439,39 @@
 </head>
 <body>
 
+<!-- ===== LOGIN SCREEN =====
+     Shown until you're signed in. Your wardrobe data lives in the cloud
+     tied to your account, so this is the gate that unlocks it. -->
+<div id="authScreen" style="min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px;">
+  <div class="modal" style="max-width:400px; width:100%;">
+    <h2 id="authTitle" style="margin-bottom:8px;">Sign in to W9Day</h2>
+    <p class="field-hint" id="authSubtitle" style="margin-bottom:20px;">Your wardrobe, synced across every device.</p>
+
+    <label class="field-label" style="margin-top:0;">Email</label>
+    <input type="text" id="authEmail" placeholder="you@example.com" autocapitalize="off" autocorrect="off">
+
+    <label class="field-label">Password</label>
+    <input type="password" id="authPassword" placeholder="At least 6 characters">
+
+    <p id="authError" style="color:var(--orange); font-size:14px; font-weight:700; margin:12px 0 0; display:none;"></p>
+
+    <div class="modal-actions" style="justify-content:space-between; align-items:center;">
+      <button class="btn-secondary" id="authToggleMode" style="border:none; padding-left:0;">need an account?</button>
+      <button class="btn-primary" id="authSubmit">sign in</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== MAIN APP (hidden until signed in) ===== -->
+<div id="appContent" style="display:none;">
+
 <header>
   <div class="logo">W9Day</div>
   <nav>
     <button class="nav-btn active" data-page="wardrobe"><i data-lucide="shirt"></i> wardrobe</button>
     <button class="nav-btn" data-page="outfits"><i data-lucide="plus"></i> outfits</button>
     <button class="nav-btn" data-page="randomize"><i data-lucide="shuffle"></i> randomize</button>
+    <button class="nav-btn" id="signOutBtn" title="Sign out"><i data-lucide="log-out"></i></button>
   </nav>
 </header>
 
@@ -624,6 +657,8 @@
   </div>
 </div>
 
+</div> <!-- /#appContent -->
+
 <script>
 /* =========================================================
    W9DAY — DATA LAYER
@@ -692,6 +727,7 @@ function loadWardrobe() {
 }
 function saveWardrobe(items) {
   localStorage.setItem('w9day_wardrobe', JSON.stringify(items));
+  syncToCloud();
 }
 
 let wardrobe = loadWardrobe();
@@ -1049,13 +1085,13 @@ function loadOutfits() {
   const raw = localStorage.getItem('w9day_outfits');
   return raw ? JSON.parse(raw) : [];
 }
-function saveOutfits(items) { localStorage.setItem('w9day_outfits', JSON.stringify(items)); }
+function saveOutfits(items) { localStorage.setItem('w9day_outfits', JSON.stringify(items)); syncToCloud(); }
 
 function loadTags() {
   const raw = localStorage.getItem('w9day_tags');
   return raw ? JSON.parse(raw) : DEFAULT_TAGS.slice(); // .slice() copies the array
 }
-function saveTags(tags) { localStorage.setItem('w9day_tags', JSON.stringify(tags)); }
+function saveTags(tags) { localStorage.setItem('w9day_tags', JSON.stringify(tags)); syncToCloud(); }
 
 // Custom tags (anything beyond the 10 built-in ones) are only worth keeping
 // around in the filter list while some outfit still uses them. Called after
@@ -1523,6 +1559,154 @@ renderOutfits();
 // call lucide.createIcons() themselves after they redraw, since new
 // icon tags they create wouldn't otherwise be picked up.
 if (window.lucide) lucide.createIcons();
+
+/* =========================================================
+   CLOUD SYNC (Supabase)
+   Your wardrobe data is stored in the cloud, tied to your account,
+   so it's identical on every device you sign into. localStorage is
+   still used underneath exactly as before — every save function
+   above still writes there first — but every change also gets
+   pushed up to Supabase, and on sign-in the cloud copy becomes the
+   source of truth for this device.
+
+   This block sits at the very end of the script on purpose: it
+   calls functions and reads variables (renderWardrobe, wardrobe,
+   DEFAULT_TAGS, etc.) defined earlier in the file, and putting it
+   last guarantees all of that already exists by the time anything
+   here actually runs.
+   ========================================================= */
+const SUPABASE_URL = 'https://rhjnxykgioxrjsnuoumh.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_9Pyghr6asKNg8-ZvRLRQVQ_7kC4Kp1p';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+let currentUser = null;
+let cloudSyncReady = false; // true once the initial cloud load finishes — guards against an empty/stale push happening before we've actually loaded the real data
+
+// Pushes the current in-memory wardrobe/outfits/tags up to your account's
+// single row in the wardrobe_data table. Safe to call often — it's a
+// simple "replace with the current state" upsert, not an incremental diff.
+async function syncToCloud() {
+  if (!currentUser || !cloudSyncReady) return;
+  try {
+    await sb.from('wardrobe_data').upsert({
+      user_id: currentUser.id,
+      data: { wardrobe, outfits, tags: availableTags },
+      updated_at: new Date().toISOString()
+    });
+  } catch (err) {
+    console.error('Cloud sync failed:', err);
+  }
+}
+
+// Runs once right after signing in: pulls this account's existing cloud
+// data down (if any) and makes it the source of truth on this device. On
+// a brand-new account with no cloud row yet, it instead uploads whatever
+// is currently on this device as the starting point.
+async function loadFromCloud() {
+  const { data: row, error } = await sb
+    .from('wardrobe_data')
+    .select('data')
+    .eq('user_id', currentUser.id)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Could not load cloud data:', error);
+    showAlertDialog('Could not load your data from the cloud — check your connection and reopen the app.');
+    cloudSyncReady = true;
+    return;
+  }
+
+  if (row && row.data) {
+    wardrobe = row.data.wardrobe || [];
+    outfits = row.data.outfits || [];
+    availableTags = row.data.tags || DEFAULT_TAGS.slice();
+    saveWardrobe(wardrobe);
+    saveOutfits(outfits);
+    saveTags(availableTags);
+  }
+
+  cloudSyncReady = true;
+  if (!row) await syncToCloud(); // first sign-in on this account: seed the cloud from this device
+
+  renderWardrobe();
+  renderOutfits();
+  renderTagFilterChips();
+  renderColorFilterGrid();
+}
+
+/* --- login screen behavior --- */
+let authMode = 'signin';
+
+function showAuthScreen() {
+  document.getElementById('authScreen').style.display = 'flex';
+  document.getElementById('appContent').style.display = 'none';
+}
+function showApp() {
+  document.getElementById('authScreen').style.display = 'none';
+  document.getElementById('appContent').style.display = 'block';
+}
+function showAuthError(message) {
+  const el = document.getElementById('authError');
+  el.textContent = message;
+  el.style.display = 'block';
+}
+
+document.getElementById('authToggleMode').addEventListener('click', () => {
+  authMode = (authMode === 'signin') ? 'signup' : 'signin';
+  document.getElementById('authTitle').textContent = (authMode === 'signin') ? 'Sign in to W9Day' : 'Create your W9Day account';
+  document.getElementById('authSubmit').textContent = (authMode === 'signin') ? 'sign in' : 'sign up';
+  document.getElementById('authToggleMode').textContent = (authMode === 'signin') ? 'need an account?' : 'already have one?';
+  document.getElementById('authError').style.display = 'none';
+});
+
+document.getElementById('authSubmit').addEventListener('click', async () => {
+  const email = document.getElementById('authEmail').value.trim();
+  const password = document.getElementById('authPassword').value;
+  if (!email || !password) { showAuthError('Enter both an email and password.'); return; }
+
+  const btn = document.getElementById('authSubmit');
+  const originalLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'please wait…';
+  document.getElementById('authError').style.display = 'none';
+
+  try {
+    const { error } = (authMode === 'signin')
+      ? await sb.auth.signInWithPassword({ email, password })
+      : await sb.auth.signUp({ email, password });
+    if (error) showAuthError(error.message);
+    // On success, the onAuthStateChange listener below takes over —
+    // nothing else to do here.
+  } catch (err) {
+    showAuthError('Something went wrong — check your connection and try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
+});
+
+document.getElementById('signOutBtn').addEventListener('click', async () => {
+  const ok = await showConfirmDialog('Sign out of W9Day?');
+  if (!ok) return;
+  await sb.auth.signOut();
+});
+
+// Fires once immediately with whatever session already exists (or null),
+// and again every time you sign in or out — this one listener drives the
+// entire login/logout flow.
+sb.auth.onAuthStateChange(async (event, session) => {
+  if (session && session.user) {
+    if (currentUser && currentUser.id === session.user.id && cloudSyncReady) return; // already handled this session
+    currentUser = session.user;
+    cloudSyncReady = false;
+    showApp();
+    await loadFromCloud();
+  } else {
+    currentUser = null;
+    cloudSyncReady = false;
+    showAuthScreen();
+  }
+});
 </script>
 </body>
 </html>
