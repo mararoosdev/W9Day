@@ -1984,19 +1984,39 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 let currentUser = null;
 let cloudSyncReady = false; // true once the initial cloud load finishes — guards against an empty/stale push happening before we've actually loaded the real data
 
-// Retries a Supabase call a few times with increasing delays before giving
-// up — mobile connections (and Supabase's free tier, which briefly pauses
-// projects after inactivity and takes a moment to wake back up) can fail
-// or time out on the first attempt even when everything is fine. `fn` must
-// return the Supabase call's result object ({ data, error }); this resolves
-// once a call succeeds (error is falsy) or every attempt has been used up.
-async function withRetries(fn, attempts = 4, baseDelayMs = 800) {
+// A small, non-blocking banner at the bottom of the screen — unlike the
+// old alert() version, this never interrupts what you're doing. It shows
+// the *real* underlying error text (not a generic message) so if this
+// keeps happening, screenshotting it tells us exactly what's actually
+// failing, instead of guessing.
+function showCloudBanner(message) {
+  let banner = document.getElementById('cloudStatusBanner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'cloudStatusBanner';
+    banner.style.cssText = 'position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:var(--dark); color:#fff; padding:10px 20px; border-radius:999px; font-size:13px; font-weight:700; z-index:999; max-width:90vw; text-align:center; box-shadow:0 4px 14px rgba(0,0,0,0.25);';
+    document.body.appendChild(banner);
+  }
+  banner.textContent = message;
+  banner.style.display = 'block';
+  clearTimeout(banner._hideTimer);
+  banner._hideTimer = setTimeout(() => { banner.style.display = 'none'; }, 8000);
+}
+
+// Retries a Supabase call several times with increasing delays before
+// giving up. Two real causes this covers: an ordinary flaky connection,
+// and Supabase's free tier, which pauses projects after inactivity and
+// documents up to ~30 seconds to wake back up on the first request after
+// a pause — attempts/delays below add up to about 60 seconds, comfortably
+// past that. `fn` must return the Supabase call's result object
+// ({ data, error }); resolves once a call succeeds or attempts run out.
+async function withRetries(fn, attempts = 6, baseDelayMs = 1000) {
   let lastResult;
   for (let i = 0; i < attempts; i++) {
     lastResult = await fn();
     if (!lastResult.error) return lastResult;
     if (i < attempts - 1) {
-      const delay = baseDelayMs * Math.pow(2, i); // 800ms, 1.6s, 3.2s, ...
+      const delay = baseDelayMs * Math.pow(2, i); // 1s, 2s, 4s, 8s, 16s
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }
@@ -2014,9 +2034,16 @@ async function syncToCloud() {
       data: { wardrobe, outfits, tags: availableTags },
       updated_at: new Date().toISOString()
     }));
-    if (error) console.error('Cloud sync failed after retries:', error);
+    if (error) {
+      console.error('Cloud sync failed after retries:', error);
+      // This is the one worth surfacing: if a save silently never reaches
+      // the cloud, another device will correctly load "the cloud data" —
+      // it'll just be missing whatever failed to push from here.
+      showCloudBanner('Could not save to the cloud: ' + (error.message || error));
+    }
   } catch (err) {
     console.error('Cloud sync failed:', err);
+    showCloudBanner('Could not save to the cloud: ' + (err.message || err));
   }
 }
 
@@ -2037,6 +2064,7 @@ async function loadFromCloud() {
     // this device's localStorage (already loaded before this ran). Once
     // the connection recovers, the next edit you make will sync normally.
     console.error('Could not load cloud data after retries:', error);
+    showCloudBanner('Could not load from the cloud: ' + (error.message || error));
     cloudSyncReady = true;
     renderWardrobe();
     renderOutfits();
