@@ -1071,7 +1071,37 @@ document.getElementById('closeAddPiece').addEventListener('click', closeModal);
 document.getElementById('cancelAddPiece').addEventListener('click', closeModal);
 overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
 
-/* --- photo upload: read the file the user picks and preview it --- */
+// Resizes an image down to a max dimension using a canvas, keeping PNG
+// output (not JPEG) so pieces uploaded with a transparent background stay
+// transparent. This is the actual fix for the sync timeouts: your photos
+// were being stored at full camera resolution — often several MB each —
+// directly in the cloud database row. Reading that whole row back was
+// taking too long. Shrinking dimensions before ever storing a photo cuts
+// its size dramatically (usually 90%+) since app never displays these
+// larger than a few hundred pixels anyway.
+function loadImageFromDataURL(dataURL) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = dataURL;
+  });
+}
+async function compressImage(dataURL, maxDimension = 800) {
+  const img = await loadImageFromDataURL(dataURL);
+  let { width, height } = img;
+  if (width > maxDimension || height > maxDimension) {
+    if (width > height) { height = Math.round(height * (maxDimension / width)); width = maxDimension; }
+    else { width = Math.round(width * (maxDimension / height)); height = maxDimension; }
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+  return canvas.toDataURL('image/png');
+}
+
+/* --- photo upload: read the file the user picks, compress it, and preview it --- */
 document.getElementById('uploadBox').addEventListener('click', () => {
   document.getElementById('fileInput').click();
 });
@@ -1079,8 +1109,8 @@ document.getElementById('fileInput').addEventListener('change', (e) => {
   const file = e.target.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = (ev) => {
-    draftPhoto = ev.target.result; // base64 string
+  reader.onload = async (ev) => {
+    draftPhoto = await compressImage(ev.target.result, 800);
     const preview = document.getElementById('uploadPreview');
     preview.src = draftPhoto;
     preview.style.display = 'block';
@@ -1962,6 +1992,32 @@ renderOutfits();
 // icon tags they create wouldn't otherwise be picked up.
 if (window.lucide) lucide.createIcons();
 
+// One-time cleanup: photos added before compressImage() existed are still
+// sitting at full camera resolution, which is exactly what's been causing
+// the cloud sync timeouts. This shrinks any large photo already in your
+// wardrobe down to the same size new uploads now use, then saves — which
+// also pushes the now much-smaller payload to the cloud, fixing the
+// oversized row directly. Gated behind a flag so it only ever runs once
+// per device, not on every page load.
+async function compressExistingPhotosOnce() {
+  if (localStorage.getItem('w9day_photos_compressed_v1')) return;
+  let changed = false;
+  for (const item of wardrobe) {
+    if (item.photo && item.photo.length > 200000) { // ~150KB+ as base64 — worth shrinking
+      try {
+        item.photo = await compressImage(item.photo, 800);
+        changed = true;
+      } catch (err) {
+        console.error('Could not compress existing photo for', item.name, err);
+      }
+    }
+  }
+  localStorage.setItem('w9day_photos_compressed_v1', 'true');
+  if (changed) {
+    saveWardrobe(wardrobe); // also re-syncs the now-smaller data to the cloud
+    renderWardrobe();
+  }
+}
 /* =========================================================
    CLOUD SYNC (Supabase)
    Your wardrobe data is stored in the cloud, tied to your account,
@@ -2158,6 +2214,7 @@ sb.auth.onAuthStateChange(async (event, session) => {
     cloudSyncReady = false;
     showApp();
     await loadFromCloud();
+    await compressExistingPhotosOnce(); // shrinks + re-syncs any oversized photos now that cloudSyncReady is true
   } else {
     currentUser = null;
     cloudSyncReady = false;
