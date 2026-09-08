@@ -1999,24 +1999,30 @@ if (window.lucide) lucide.createIcons();
 // also pushes the now much-smaller payload to the cloud, fixing the
 // oversized row directly. Gated behind a flag so it only ever runs once
 // per device, not on every page load.
+//
+// Important: this pushes a fresh copy to the cloud on its first run EVEN
+// IF nothing on this device needed compressing. The oversized row may
+// have been built up from photos saved on a different device/session —
+// this device's local cache might look "clean" while the actual cloud
+// row is still huge. Only compressing what's locally large would miss
+// that case entirely and the cloud row would never actually shrink.
 async function compressExistingPhotosOnce() {
-  if (localStorage.getItem('w9day_photos_compressed_v1')) return;
-  let changed = false;
+  const alreadyRan = localStorage.getItem('w9day_photos_compressed_v1');
+  if (alreadyRan) return;
+
   for (const item of wardrobe) {
     if (item.photo && item.photo.length > 200000) { // ~150KB+ as base64 — worth shrinking
       try {
         item.photo = await compressImage(item.photo, 800);
-        changed = true;
       } catch (err) {
         console.error('Could not compress existing photo for', item.name, err);
       }
     }
   }
+
   localStorage.setItem('w9day_photos_compressed_v1', 'true');
-  if (changed) {
-    saveWardrobe(wardrobe); // also re-syncs the now-smaller data to the cloud
-    renderWardrobe();
-  }
+  saveWardrobe(wardrobe); // unconditional: overwrites the cloud row with this (now guaranteed-small) copy
+  renderWardrobe();
 }
 /* =========================================================
    CLOUD SYNC (Supabase)
