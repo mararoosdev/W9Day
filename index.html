@@ -76,6 +76,10 @@
     -webkit-font-smoothing: antialiased;
     /* prevents the iPad "pull to refresh" bounce feeling glitchy in a saved app */
     overscroll-behavior-y: none;
+    /* stops iOS Safari's double-tap-to-zoom — without this, a quick double
+       tap on a button (or just tapping twice) zooms the whole page instead
+       of registering as two taps. Pinch-to-zoom still works fine. */
+    touch-action: manipulation;
   }
 
   /* Lucide icons: size + alignment so they sit nicely next to text */
@@ -187,6 +191,9 @@
     margin-top: 20px;
   }
   #wardrobeGrid { grid-template-columns: repeat(6, 1fr); }
+  @media (orientation: portrait) {
+    #wardrobeGrid { grid-template-columns: repeat(4, 1fr); }
+  }
   .card {
     background: var(--white);
     border-radius: var(--radius-lg);
@@ -257,6 +264,10 @@
     z-index: 100;
   }
   .modal-overlay.open { display: flex; }
+  /* the mini dialog (alert/confirm/prompt replacement) can appear on top of
+     another already-open modal — e.g. "pick a category" while Add Piece is
+     open — so it needs to always win regardless of DOM order. */
+  #miniDialogOverlay { z-index: 300; }
   .modal {
     background: var(--modal-bg);
     border-radius: var(--radius-lg);
@@ -273,6 +284,7 @@
     background: var(--blue); color: var(--white); border: none;
     font-weight: 700; cursor: pointer;
     display: flex; align-items: center; justify-content: center;
+    z-index: 10; /* without this, content added later in the modal (like the outfit preview image) can win the paint order and cover the button */
   }
   .modal-close svg { width: 20px; height: 20px; }
   label.field-label { display: block; font-weight: 700; color: var(--blue); margin: 18px 0 6px; font-size: 20px; }
@@ -373,7 +385,7 @@
     background: #F7F7F5;
     overflow: hidden;
   }
-  .outfit-preview img { object-fit: contain; }
+  .outfit-preview img { object-fit: contain; background: transparent; }
 
   .outfit-images {
     display: flex; flex-wrap: wrap; gap: 6px; padding: 16px;
@@ -419,7 +431,7 @@
   .canvas-item.dragging { cursor: grabbing; }
   .canvas-item img {
     width: 100%; height: 100%; object-fit: contain;
-    display: block; /* no background here — lets pieces with transparent PNGs actually show as transparent */
+    display: block; background: transparent; /* explicit, not just omitted — lets pieces with transparent backgrounds actually show as transparent */
     pointer-events: none; /* clicks/drags land on the parent .canvas-item, not the <img> */
   }
   .canvas-item .remove-btn {
@@ -474,16 +486,6 @@
     cursor: pointer; flex-shrink: 0;
   }
   .randomize-label { font-size: 24px; color: var(--blue); font-weight: 700; text-align: center; margin: 0; }
-  .randomize-add-tile {
-    background: var(--card-bg);
-    border-radius: var(--radius-lg);
-    flex: 1 1 300px;
-    max-width: 400px;
-    min-height: 293px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
   .randomize-remove-btn {
     position: absolute; top: 8px; right: 8px;
     width: 28px; height: 28px; border-radius: 50%;
@@ -1670,11 +1672,28 @@ function buildRandomizeTile(key, matchType, removable, extraIndex) {
 }
 
 function buildAddCategoryTile(extraIndex) {
+  // Reuses the exact same .randomize-tile-wrap/.randomize-tile structure as
+  // a filled slot (including a same-size, just invisible, label underneath)
+  // so empty "+" tiles end up pixel-identical in size to filled ones —
+  // previously this used a shorter, differently-styled tile and the grid
+  // rows didn't line up.
+  const wrap = document.createElement('div');
+  wrap.className = 'randomize-tile-wrap';
+
   const tile = document.createElement('div');
-  tile.className = 'randomize-add-tile';
+  tile.className = 'randomize-tile';
+  tile.style.justifyContent = 'center';
   tile.innerHTML = `<button class="randomize-arrow-btn"><i data-lucide="plus"></i></button>`;
   tile.querySelector('button').addEventListener('click', () => openAddCategoryModal(extraIndex));
-  return tile;
+
+  const label = document.createElement('p');
+  label.className = 'randomize-label';
+  label.style.visibility = 'hidden'; // reserves the same space as a real label without showing text
+  label.textContent = 'placeholder';
+
+  wrap.appendChild(tile);
+  wrap.appendChild(label);
+  return wrap;
 }
 
 function renderRandomizeGrid() {
