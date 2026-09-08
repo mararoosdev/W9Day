@@ -705,6 +705,7 @@
     <p class="card-name" id="outfitDetailName" style="font-size: 24px;"></p>
     <p class="card-meta">weather: <span class="outfit-weather" id="outfitDetailWeather"></span></p>
     <p class="outfit-tags">tags: <span id="outfitDetailTags"></span></p>
+    <button class="btn-primary" id="editOutfitBtn" style="width:100%; justify-content:center; margin-top:16px;"><i data-lucide="pencil"></i> edit outfit</button>
   </div>
 </div>
 
@@ -727,7 +728,7 @@
 <div class="modal-overlay" id="addPieceOverlay">
   <div class="modal">
     <button class="modal-close" id="closeAddPiece"><i data-lucide="x"></i></button>
-    <h2>Add a piece to your wardrobe</h2>
+    <h2 id="addPieceTitle">Add a piece to your wardrobe</h2>
 
     <label class="field-label">Photo</label>
     <div class="upload-box" id="uploadBox">
@@ -775,7 +776,7 @@
 const CATEGORIES = {
   accessories: ['hats', 'scarfs', 'jewellery', 'bags', 'glasses'],
   shoes: ['sneakers', 'heels', 'flats', 'sandals', 'boots', 'loafers', 'shoes'],
-  bottoms: ['skirts', 'shorts', 'trousers', 'leggings', 'jeans'],
+  bottoms: ['skirts', 'shorts', 'pants', 'leggings', 'jeans'],
   tops: ['blouses', 't-shirts', 'tank tops', 'short sleeve', 'long sleeve', 'sweaters', 'jumpers', 'corsets'],
   'full body': ['dresses', 'jumpsuits'],
   outdoor: ['jackets', 'coats'],
@@ -783,9 +784,9 @@ const CATEGORIES = {
 };
 
 // A few category names are "plurale tantum" — words that don't really have
-// a natural singular ("trousers", not "trouser") — so default piece names
+// a natural singular ("pants", not "pant") — so default piece names
 // keep those as-is. Everything else just drops a trailing "s".
-const PLURALE_TANTUM = ['trousers', 'shorts', 'leggings', 'jeans', 'glasses', 'jewellery'];
+const PLURALE_TANTUM = ['pants', 'shorts', 'leggings', 'jeans', 'glasses', 'jewellery'];
 function singularize(word) {
   if (PLURALE_TANTUM.includes(word)) return word;
   return word.endsWith('s') ? word.slice(0, -1) : word;
@@ -842,6 +843,7 @@ let colorFilterActive = [];     // color names selected in the wardrobe page's c
 let draftPhoto = null;      // base64 image data for the piece being added
 let draftCategory = null;   // e.g. "jeans"
 let draftColors = [];       // up to 3 color names
+let editingPieceId = null;  // set to a wardrobe piece's id when the modal is editing it, null when adding new
 
 /* =========================================================
    SHARED MINI DIALOG — replaces alert() / confirm() / prompt()
@@ -885,8 +887,8 @@ function showMiniDialog({ message, showInput = false, defaultValue = '', confirm
 // Drop-in replacements: showConfirmDialog resolves true/false,
 // showPromptDialog resolves a string or null, showAlertDialog resolves
 // once the user taps "ok" (no cancel button shown).
-function showConfirmDialog(message) {
-  return showMiniDialog({ message, confirmLabel: 'delete', cancelLabel: 'cancel' });
+function showConfirmDialog(message, confirmLabel = 'delete') {
+  return showMiniDialog({ message, confirmLabel, cancelLabel: 'cancel' });
 }
 function showPromptDialog(message, defaultValue = '') {
   return showMiniDialog({ message, showInput: true, defaultValue, confirmLabel: 'ok', cancelLabel: 'cancel' });
@@ -1013,6 +1015,7 @@ function renderWardrobe() {
   items.forEach(item => {
     const card = document.createElement('div');
     card.className = 'card';
+    card.dataset.pieceId = item.id;
 
     const img = item.photo
       ? `<img src="${item.photo}" alt="${item.name}">`
@@ -1039,13 +1042,20 @@ function renderWardrobe() {
 
 document.getElementById('wardrobeGrid').addEventListener('click', async (e) => {
   const del = e.target.closest('.card-delete');
-  if (!del) return;
-  const ok = await showConfirmDialog('Remove this piece from your wardrobe? This can\'t be undone.');
-  if (!ok) return;
-  const id = del.dataset.id;
-  wardrobe = wardrobe.filter(i => i.id !== id);
-  saveWardrobe(wardrobe);
-  renderWardrobe();
+  if (del) {
+    const ok = await showConfirmDialog('Remove this piece from your wardrobe? This can\'t be undone.');
+    if (!ok) return;
+    const id = del.dataset.id;
+    wardrobe = wardrobe.filter(i => i.id !== id);
+    saveWardrobe(wardrobe);
+    renderWardrobe();
+    return;
+  }
+  const card = e.target.closest('.card');
+  if (card) {
+    const item = wardrobe.find(w => w.id === card.dataset.pieceId);
+    if (item) openModal(item);
+  }
 });
 
 /* =========================================================
@@ -1053,12 +1063,27 @@ document.getElementById('wardrobeGrid').addEventListener('click', async (e) => {
    ========================================================= */
 const overlay = document.getElementById('addPieceOverlay');
 
-function openModal() {
-  draftPhoto = null; draftCategory = null; draftColors = [];
-  document.getElementById('pieceName').value = '';
-  document.getElementById('uploadPreview').style.display = 'none';
-  document.getElementById('uploadPrompt').style.display = 'block';
-  document.getElementById('categoryTriggerLabel').textContent = 'choose a category';
+function openModal(editItem) {
+  editingPieceId = editItem ? editItem.id : null;
+  draftPhoto = editItem ? editItem.photo : null;
+  draftCategory = editItem ? { topCategory: editItem.topCategory, subCategory: editItem.subCategory } : null;
+  draftColors = editItem ? editItem.colors.slice() : [];
+
+  document.getElementById('addPieceTitle').textContent = editItem ? 'Edit piece' : 'Add a piece to your wardrobe';
+  document.getElementById('saveAddPiece').textContent = editItem ? 'save changes' : 'save';
+  document.getElementById('pieceName').value = editItem ? editItem.name : '';
+
+  const preview = document.getElementById('uploadPreview');
+  if (editItem && editItem.photo) {
+    preview.src = editItem.photo;
+    preview.style.display = 'block';
+    document.getElementById('uploadPrompt').style.display = 'none';
+  } else {
+    preview.style.display = 'none';
+    document.getElementById('uploadPrompt').style.display = 'block';
+  }
+
+  document.getElementById('categoryTriggerLabel').textContent = editItem ? editItem.subCategory : 'choose a category';
   document.getElementById('categoryPanel').classList.remove('open');
   buildCategoryPicker();
   buildColorPicker();
@@ -1066,7 +1091,7 @@ function openModal() {
 }
 function closeModal() { overlay.classList.remove('open'); }
 
-document.getElementById('openAddPiece').addEventListener('click', openModal);
+document.getElementById('openAddPiece').addEventListener('click', () => openModal());
 document.getElementById('closeAddPiece').addEventListener('click', closeModal);
 document.getElementById('cancelAddPiece').addEventListener('click', closeModal);
 overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
@@ -1143,7 +1168,8 @@ function buildCategoryPicker() {
     subs.forEach(sub => {
       const chip = document.createElement('button');
       chip.type = 'button';
-      chip.className = 'chip';
+      const isPreselected = draftCategory && draftCategory.topCategory === group && draftCategory.subCategory === sub;
+      chip.className = 'chip' + (isPreselected ? ' active' : '');
       chip.textContent = sub;
       chip.addEventListener('click', () => {
         wrap.querySelectorAll('.chip').forEach(c => c.classList.remove('active'));
@@ -1163,7 +1189,7 @@ function buildColorPicker() {
   wrap.innerHTML = '';
   COLORS.forEach(([name, hex]) => {
     const opt = document.createElement('div');
-    opt.className = 'color-opt';
+    opt.className = 'color-opt' + (draftColors.includes(name) ? ' selected' : '');
     opt.innerHTML = `<div class="dot" style="background:${hex}"></div><span>${name}</span>`;
     opt.addEventListener('click', () => {
       const i = draftColors.indexOf(name);
@@ -1193,14 +1219,25 @@ document.getElementById('saveAddPiece').addEventListener('click', () => {
   }
 
   try {
-    wardrobe.push({
-      id: Date.now().toString(),
-      name,
-      photo: draftPhoto,
-      topCategory: draftCategory.topCategory,
-      subCategory: draftCategory.subCategory,
-      colors: draftColors
-    });
+    if (editingPieceId) {
+      const existing = wardrobe.find(w => w.id === editingPieceId);
+      if (existing) {
+        existing.name = name;
+        existing.photo = draftPhoto;
+        existing.topCategory = draftCategory.topCategory;
+        existing.subCategory = draftCategory.subCategory;
+        existing.colors = draftColors;
+      }
+    } else {
+      wardrobe.push({
+        id: Date.now().toString(),
+        name,
+        photo: draftPhoto,
+        topCategory: draftCategory.topCategory,
+        subCategory: draftCategory.subCategory,
+        colors: draftColors
+      });
+    }
     saveWardrobe(wardrobe);
     renderWardrobe();
   } catch (err) {
@@ -1211,6 +1248,7 @@ document.getElementById('saveAddPiece').addEventListener('click', () => {
     console.error('Error while saving piece:', err);
   } finally {
     document.getElementById('categoryPanel').classList.remove('open');
+    editingPieceId = null;
     closeModal();
   }
 });
@@ -1269,6 +1307,7 @@ let topZ = 1; // increments every time a piece is touched, so that piece can cla
 
 let draftWeather = [];            // weather selected in the Save Outfit modal
 let draftTags = [];               // tags selected in the Save Outfit modal
+let editingOutfitId = null;       // set to an outfit's id when Compose/Save Outfit is editing it, null when creating new
 
 let weatherFilterActive = [];     // weather filter selections on the Outfits page
 let tagFilterActive = [];         // tag filter selections on the Outfits page
@@ -1277,6 +1316,7 @@ let tagFilterActive = [];         // tag filter selections on the Outfits page
    COMPOSE PAGE
    ========================================================= */
 document.getElementById('openCompose').addEventListener('click', () => {
+  editingOutfitId = null;
   canvasItems = [];
   composeCategory = 'all';
   composeSubCategory = 'all';
@@ -1290,6 +1330,26 @@ document.getElementById('openCompose').addEventListener('click', () => {
   renderComposeGrid();
   showPage('compose');
 });
+
+// Opens Compose pre-loaded with an existing outfit's pieces and layout, so
+// you can rearrange, add, or remove pieces — saving updates that same
+// outfit instead of creating a new one.
+function openComposeForEdit(outfit) {
+  editingOutfitId = outfit.id;
+  canvasItems = (outfit.layout || []).map(li => ({ ...li })); // copy, so dragging here doesn't mutate the saved outfit until you actually save
+  topZ = canvasItems.reduce((max, ci) => Math.max(max, ci.z || 0), 0) + 1;
+  composeCategory = 'all';
+  composeSubCategory = 'all';
+  composeColorFilterActive = [];
+  document.querySelectorAll('#composeCategoryChips .chip').forEach(c =>
+    c.classList.toggle('active', c.dataset.cat === 'all')
+  );
+  renderComposeSubCategoryChips();
+  renderComposeColorFilterGrid();
+  renderCanvas();
+  renderComposeGrid();
+  showPage('compose');
+}
 
 document.getElementById('composeBackBtn').addEventListener('click', async () => {
   if (canvasItems.length > 0) {
@@ -1671,6 +1731,7 @@ function saveRandomizedOutfit() {
     width: 160, height: 160, z: i + 1
   }));
   topZ = canvasItems.length + 1;
+  editingOutfitId = null; // Randomize always creates a new outfit, never edits an existing one
 
   document.getElementById('openSaveOutfit').click(); // reuses Compose's Save Outfit flow exactly
 }
@@ -1725,9 +1786,11 @@ const saveOutfitOverlay = document.getElementById('saveOutfitOverlay');
 
 document.getElementById('openSaveOutfit').addEventListener('click', () => {
   if (canvasItems.length === 0) { showAlertDialog('Add at least one piece to the canvas first.'); return; }
-  draftWeather = [];
-  draftTags = [];
-  document.getElementById('outfitName').value = '';
+  const editing = editingOutfitId ? outfits.find(o => o.id === editingOutfitId) : null;
+  draftWeather = editing ? editing.weather.slice() : [];
+  draftTags = editing ? editing.tags.slice() : [];
+  document.getElementById('outfitName').value = editing ? editing.name : '';
+  document.getElementById('confirmSaveOutfit').textContent = editing ? 'save changes' : 'save';
   buildWeatherPicker('outfitWeatherPicker', draftWeather, () => {});
   buildTagPicker();
   saveOutfitOverlay.classList.add('open');
@@ -1820,8 +1883,6 @@ function renderOutfitTagChips() {
 }
 
 document.getElementById('confirmSaveOutfit').addEventListener('click', () => {
-  const name = document.getElementById('outfitName').value.trim()
-    || `outfit #${nextDefaultNumber(outfits.map(o => o.name), 'outfit')}`;
   const canvasRect = document.getElementById('composeCanvas').getBoundingClientRect();
   // The canvas is hidden (0x0) when saving from the Randomize page rather
   // than Compose, since that page's section isn't visible — fall back to
@@ -1829,15 +1890,32 @@ document.getElementById('confirmSaveOutfit').addEventListener('click', () => {
   const canvasSize = (canvasRect.width && canvasRect.height)
     ? { width: canvasRect.width, height: canvasRect.height }
     : { width: 560, height: 560 };
-  outfits.push({
-    id: Date.now().toString(),
-    name,
-    pieceIds: canvasItems.map(ci => ci.id),
-    layout: canvasItems.slice(),   // x/y/width/height/z per piece
-    canvasSize,                     // so the layout can be scaled to any preview size later
-    weather: draftWeather.slice(),
-    tags: draftTags.slice()
-  });
+
+  if (editingOutfitId) {
+    const existing = outfits.find(o => o.id === editingOutfitId);
+    if (existing) {
+      existing.name = document.getElementById('outfitName').value.trim() || existing.name;
+      existing.pieceIds = canvasItems.map(ci => ci.id);
+      existing.layout = canvasItems.slice();
+      existing.canvasSize = canvasSize;
+      existing.weather = draftWeather.slice();
+      existing.tags = draftTags.slice();
+    }
+  } else {
+    const name = document.getElementById('outfitName').value.trim()
+      || `outfit #${nextDefaultNumber(outfits.map(o => o.name), 'outfit')}`;
+    outfits.push({
+      id: Date.now().toString(),
+      name,
+      pieceIds: canvasItems.map(ci => ci.id),
+      layout: canvasItems.slice(),   // x/y/width/height/z per piece
+      canvasSize,                     // so the layout can be scaled to any preview size later
+      weather: draftWeather.slice(),
+      tags: draftTags.slice()
+    });
+  }
+
+  editingOutfitId = null;
   saveOutfits(outfits);
   saveOutfitOverlay.classList.remove('open');
   renderOutfits();
@@ -1925,9 +2003,12 @@ document.getElementById('outfitsGrid').addEventListener('click', async (e) => {
   if (card) openOutfitDetail(card.dataset.outfitId);
 });
 
+let currentDetailOutfitId = null; // which outfit the detail modal is currently showing, so "edit" knows which one
+
 function openOutfitDetail(outfitId) {
   const outfit = outfits.find(o => o.id === outfitId);
   if (!outfit) return;
+  currentDetailOutfitId = outfitId;
 
   const weatherIcons = outfit.weather.map(key => {
     const w = WEATHER.find(w => w.key === key);
@@ -1946,6 +2027,12 @@ document.getElementById('closeOutfitDetail').addEventListener('click', () => {
 });
 document.getElementById('outfitDetailOverlay').addEventListener('click', (e) => {
   if (e.target.id === 'outfitDetailOverlay') document.getElementById('outfitDetailOverlay').classList.remove('open');
+});
+document.getElementById('editOutfitBtn').addEventListener('click', () => {
+  const outfit = outfits.find(o => o.id === currentDetailOutfitId);
+  if (!outfit) return;
+  document.getElementById('outfitDetailOverlay').classList.remove('open');
+  openComposeForEdit(outfit);
 });
 
 // --- weather filter dropdown ---
@@ -2205,7 +2292,7 @@ document.getElementById('authSubmit').addEventListener('click', async () => {
 });
 
 document.getElementById('signOutBtn').addEventListener('click', async () => {
-  const ok = await showConfirmDialog('Sign out of W9Day?');
+  const ok = await showConfirmDialog('Sign out of W9Day?', 'log out');
   if (!ok) return;
   await sb.auth.signOut();
 });
