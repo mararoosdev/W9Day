@@ -1097,13 +1097,17 @@ document.getElementById('cancelAddPiece').addEventListener('click', closeModal);
 overlay.addEventListener('click', (e) => { if (e.target === overlay) closeModal(); });
 
 // Resizes an image down to a max dimension using a canvas, keeping PNG
-// output (not JPEG) so pieces uploaded with a transparent background stay
-// transparent. This is the actual fix for the sync timeouts: your photos
-// were being stored at full camera resolution — often several MB each —
-// directly in the cloud database row. Reading that whole row back was
-// taking too long. Shrinking dimensions before ever storing a photo cuts
-// its size dramatically (usually 90%+) since app never displays these
-// larger than a few hundred pixels anyway.
+// Resizes AND re-encodes an image so it never ends up huge in storage.
+// Two separate levers here, both needed: shrinking dimensions to a max of
+// 700px (this app never displays these larger than a few hundred pixels
+// anyway), and — the part that turned out to matter more — encoding as
+// WebP instead of PNG. PNG is lossless, so a detailed photo (not a flat
+// graphic) barely shrinks even after resizing; WebP was built for exactly
+// this kind of image and typically lands at a fraction of the PNG size
+// for the same visual quality, while still supporting transparency, so
+// pieces with their background already removed stay transparent. If a
+// browser somehow doesn't support WebP export, toDataURL silently falls
+// back to PNG on its own — this never breaks, just compresses less well.
 function loadImageFromDataURL(dataURL) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -1112,7 +1116,7 @@ function loadImageFromDataURL(dataURL) {
     img.src = dataURL;
   });
 }
-async function compressImage(dataURL, maxDimension = 800) {
+async function compressImage(dataURL, maxDimension = 700) {
   const img = await loadImageFromDataURL(dataURL);
   let { width, height } = img;
   if (width > maxDimension || height > maxDimension) {
@@ -1123,7 +1127,7 @@ async function compressImage(dataURL, maxDimension = 800) {
   canvas.width = width;
   canvas.height = height;
   canvas.getContext('2d').drawImage(img, 0, 0, width, height);
-  return canvas.toDataURL('image/png');
+  return canvas.toDataURL('image/webp', 0.82);
 }
 
 /* --- photo upload: read the file the user picks, compress it, and preview it --- */
@@ -2094,7 +2098,7 @@ if (window.lucide) lucide.createIcons();
 // row is still huge. Only compressing what's locally large would miss
 // that case entirely and the cloud row would never actually shrink.
 async function compressExistingPhotosOnce() {
-  const alreadyRan = localStorage.getItem('w9day_photos_compressed_v1');
+  const alreadyRan = localStorage.getItem('w9day_photos_compressed_v2');
   if (alreadyRan) return;
 
   for (const item of wardrobe) {
@@ -2107,7 +2111,7 @@ async function compressExistingPhotosOnce() {
     }
   }
 
-  localStorage.setItem('w9day_photos_compressed_v1', 'true');
+  localStorage.setItem('w9day_photos_compressed_v2', 'true');
   saveWardrobe(wardrobe); // unconditional: overwrites the cloud row with this (now guaranteed-small) copy
   renderWardrobe();
 }
