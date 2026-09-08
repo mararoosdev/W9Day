@@ -1984,17 +1984,37 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 let currentUser = null;
 let cloudSyncReady = false; // true once the initial cloud load finishes — guards against an empty/stale push happening before we've actually loaded the real data
 
+// Retries a Supabase call a few times with increasing delays before giving
+// up — mobile connections (and Supabase's free tier, which briefly pauses
+// projects after inactivity and takes a moment to wake back up) can fail
+// or time out on the first attempt even when everything is fine. `fn` must
+// return the Supabase call's result object ({ data, error }); this resolves
+// once a call succeeds (error is falsy) or every attempt has been used up.
+async function withRetries(fn, attempts = 4, baseDelayMs = 800) {
+  let lastResult;
+  for (let i = 0; i < attempts; i++) {
+    lastResult = await fn();
+    if (!lastResult.error) return lastResult;
+    if (i < attempts - 1) {
+      const delay = baseDelayMs * Math.pow(2, i); // 800ms, 1.6s, 3.2s, ...
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  return lastResult;
+}
+
 // Pushes the current in-memory wardrobe/outfits/tags up to your account's
 // single row in the wardrobe_data table. Safe to call often — it's a
 // simple "replace with the current state" upsert, not an incremental diff.
 async function syncToCloud() {
   if (!currentUser || !cloudSyncReady) return;
   try {
-    await sb.from('wardrobe_data').upsert({
+    const { error } = await withRetries(() => sb.from('wardrobe_data').upsert({
       user_id: currentUser.id,
       data: { wardrobe, outfits, tags: availableTags },
       updated_at: new Date().toISOString()
-    });
+    }));
+    if (error) console.error('Cloud sync failed after retries:', error);
   } catch (err) {
     console.error('Cloud sync failed:', err);
   }
@@ -2005,16 +2025,23 @@ async function syncToCloud() {
 // a brand-new account with no cloud row yet, it instead uploads whatever
 // is currently on this device as the starting point.
 async function loadFromCloud() {
-  const { data: row, error } = await sb
+  const { data: row, error } = await withRetries(() => sb
     .from('wardrobe_data')
     .select('data')
     .eq('user_id', currentUser.id)
-    .maybeSingle();
+    .maybeSingle());
 
   if (error) {
-    console.error('Could not load cloud data:', error);
-    showAlertDialog('Could not load your data from the cloud — check your connection and reopen the app.');
+    // Even after retries, the cloud is unreachable — rather than block
+    // you with a dialog, just carry on with whatever's already cached in
+    // this device's localStorage (already loaded before this ran). Once
+    // the connection recovers, the next edit you make will sync normally.
+    console.error('Could not load cloud data after retries:', error);
     cloudSyncReady = true;
+    renderWardrobe();
+    renderOutfits();
+    renderTagFilterChips();
+    renderColorFilterGrid();
     return;
   }
 
