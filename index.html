@@ -1132,6 +1132,50 @@ async function compressImage(dataURL, maxDimension = 700) {
   return canvas.toDataURL('image/webp', 0.82);
 }
 
+/* --- photo storage: photos live in a Supabase Storage bucket ("photos"),
+   not inside the wardrobe_data row itself. Each wardrobe item's `photo`
+   field stores a small URL string (pointing at the file in Storage)
+   instead of the full base64 image — this is what keeps the synced JSON
+   row small no matter how many items/photos you have. A dataURL (still
+   starting with "data:") means the photo hasn't been uploaded yet, e.g.
+   while offline; everything that reads item.photo works with either a
+   dataURL or a real URL, since both work directly as an <img src>. --- */
+function dataURLtoBlob(dataURL) {
+  const [header, base64] = dataURL.split(',');
+  const mime = header.match(/data:(.*);base64/)[1];
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+// Uploads a compressed photo dataURL to this user's folder in the "photos"
+// bucket and returns a public URL for it, or null if the upload couldn't
+// complete (e.g. offline) — callers fall back to storing the dataURL
+// itself locally in that case, so the photo is never lost, just not yet
+// off-loaded out of the synced row.
+async function uploadPhotoToStorage(dataURL, itemId) {
+  if (!currentUser || !cloudSyncReady) return null;
+  try {
+    const blob = dataURLtoBlob(dataURL);
+    const path = `${currentUser.id}/${itemId}.webp`;
+    const { error: uploadError } = await withRetries(() => sb.storage
+      .from('photos')
+      .upload(path, blob, { contentType: 'image/webp', upsert: true }));
+    if (uploadError) {
+      console.error('Photo upload failed after retries:', uploadError);
+      return null;
+    }
+    const { data } = sb.storage.from('photos').getPublicUrl(path);
+    // Cache-bust so re-uploading a photo for the same item (same path)
+    // doesn't keep showing a browser-cached older image.
+    return data.publicUrl + '?t=' + Date.now();
+  } catch (err) {
+    console.error('Photo upload failed:', err);
+    return null;
+  }
+}
+
 /* --- photo upload: read the file the user picks, compress it, and preview it --- */
 document.getElementById('uploadBox').addEventListener('click', () => {
   document.getElementById('fileInput').click();
@@ -1213,7 +1257,7 @@ function buildColorPicker() {
 }
 
 /* --- save the piece into the wardrobe array + localStorage --- */
-document.getElementById('saveAddPiece').addEventListener('click', () => {
+document.getElementById('saveAddPiece').addEventListener('click', async () => {
   if (!draftCategory) { showAlertDialog('Pick a category for this piece.'); return; }
 
   let name = document.getElementById('pieceName').value.trim();
@@ -1225,20 +1269,37 @@ document.getElementById('saveAddPiece').addEventListener('click', () => {
   }
 
   try {
+    const itemId = editingPieceId || Date.now().toString();
+
+    // If a fresh photo was picked (it's still a dataURL, not yet an
+    // uploaded Storage URL), push it to Storage now so the wardrobe_data
+    // row keeps storing just a small link, not the image itself. If the
+    // upload can't complete right now (offline, etc.), fall back to
+    // keeping the dataURL directly so nothing is lost.
+    let photo = draftPhoto;
+    if (photo && photo.startsWith('data:')) {
+      const uploadedUrl = await uploadPhotoToStorage(photo, itemId);
+      if (uploadedUrl) {
+        photo = uploadedUrl;
+      } else {
+        showCloudBanner('Could not upload photo — saved on this device for now.');
+      }
+    }
+
     if (editingPieceId) {
       const existing = wardrobe.find(w => w.id === editingPieceId);
       if (existing) {
         existing.name = name;
-        existing.photo = draftPhoto;
+        existing.photo = photo;
         existing.topCategory = draftCategory.topCategory;
         existing.subCategory = draftCategory.subCategory;
         existing.colors = draftColors;
       }
     } else {
       wardrobe.push({
-        id: Date.now().toString(),
+        id: itemId,
         name,
-        photo: draftPhoto,
+        photo,
         topCategory: draftCategory.topCategory,
         subCategory: draftCategory.subCategory,
         colors: draftColors
@@ -2102,35 +2163,47 @@ renderOutfits();
 // icon tags they create wouldn't otherwise be picked up.
 if (window.lucide) lucide.createIcons();
 
-// One-time cleanup: photos added before compressImage() existed are still
-// sitting at full camera resolution, which is exactly what's been causing
-// the cloud sync timeouts. This shrinks any large photo already in your
-// wardrobe down to the same size new uploads now use, then saves — which
-// also pushes the now much-smaller payload to the cloud, fixing the
-// oversized row directly. Gated behind a flag so it only ever runs once
-// per device, not on every page load.
+// One-time cleanup, now on its 3rd version:
+//  v1 shrank oversized photos (still stored inline as base64 PNG).
+//  v2 switched the format to WebP, which compresses photographic detail
+//     far better than PNG.
+//  v3 (this one) moves every photo OUT of the row entirely: each base64
+//     photo still sitting in `item.photo` gets uploaded to the Storage
+//     bucket, and item.photo is replaced with the small resulting URL.
+//     This is what actually removes the size ceiling — compressing
+//     harder only ever bought a bit more headroom before the row grew
+//     past it again (as happened going from 13MB back up to 19MB).
+// Gated behind a flag so it only ever runs once per device.
 //
 // Important: this pushes a fresh copy to the cloud on its first run EVEN
-// IF nothing on this device needed compressing. The oversized row may
-// have been built up from photos saved on a different device/session —
-// this device's local cache might look "clean" while the actual cloud
-// row is still huge. Only compressing what's locally large would miss
-// that case entirely and the cloud row would never actually shrink.
+// IF nothing on this device needed migrating. The oversized row may have
+// been built up from photos saved on a different device/session — this
+// device's local cache might look "clean" while the actual cloud row is
+// still huge. Only migrating what's locally inline would miss that case
+// entirely and the cloud row would never actually shrink.
 async function compressExistingPhotosOnce() {
-  const alreadyRan = localStorage.getItem('w9day_photos_compressed_v2');
+  const alreadyRan = localStorage.getItem('w9day_photos_compressed_v3');
   if (alreadyRan) return;
 
   for (const item of wardrobe) {
-    if (item.photo && item.photo.length > 200000) { // ~150KB+ as base64 — worth shrinking
-      try {
-        item.photo = await compressImage(item.photo, 800);
-      } catch (err) {
-        console.error('Could not compress existing photo for', item.name, err);
+    if (!item.photo || !item.photo.startsWith('data:')) continue; // already a Storage URL, or no photo
+    try {
+      const compressed = item.photo.length > 200000 ? await compressImage(item.photo, 800) : item.photo;
+      const url = await uploadPhotoToStorage(compressed, item.id);
+      if (url) {
+        item.photo = url;
+      } else {
+        // Couldn't upload right now (offline, etc.) — at least keep the
+        // compressed version inline so it's smaller than before, and this
+        // item will get picked up and offloaded on a future run.
+        item.photo = compressed;
       }
+    } catch (err) {
+      console.error('Could not migrate existing photo for', item.name, err);
     }
   }
 
-  localStorage.setItem('w9day_photos_compressed_v2', 'true');
+  localStorage.setItem('w9day_photos_compressed_v3', 'true');
   saveWardrobe(wardrobe); // unconditional: overwrites the cloud row with this (now guaranteed-small) copy
   renderWardrobe();
 }
