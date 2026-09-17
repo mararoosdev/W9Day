@@ -834,8 +834,24 @@ function loadWardrobe() {
   return raw ? JSON.parse(raw) : [];
 }
 function saveWardrobe(items) {
-  localStorage.setItem('w9day_wardrobe', JSON.stringify(items));
+  safeLocalStorageSet('w9day_wardrobe', JSON.stringify(items));
   syncToCloud();
+}
+
+// localStorage is only ever a local cache — the cloud row (and the
+// in-memory wardrobe/outfits/tags arrays) are the real source of truth.
+// Writing to it can fail with QuotaExceededError if the payload is too
+// big for the browser's local storage limit (much smaller than what a
+// database row allows), which used to crash loadFromCloud entirely before
+// it ever reached the step that offloads photos to Storage and shrinks
+// things back down. Now a failed local cache write is just logged and
+// skipped — the app keeps working from the in-memory data and the cloud.
+function safeLocalStorageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (err) {
+    console.error('Could not write to localStorage (continuing without local cache):', key, err);
+  }
 }
 
 let wardrobe = loadWardrobe();
@@ -1338,13 +1354,13 @@ function loadOutfits() {
   const raw = localStorage.getItem('w9day_outfits');
   return raw ? JSON.parse(raw) : [];
 }
-function saveOutfits(items) { localStorage.setItem('w9day_outfits', JSON.stringify(items)); syncToCloud(); }
+function saveOutfits(items) { safeLocalStorageSet('w9day_outfits', JSON.stringify(items)); syncToCloud(); }
 
 function loadTags() {
   const raw = localStorage.getItem('w9day_tags');
   return raw ? JSON.parse(raw) : DEFAULT_TAGS.slice(); // .slice() copies the array
 }
-function saveTags(tags) { localStorage.setItem('w9day_tags', JSON.stringify(tags)); syncToCloud(); }
+function saveTags(tags) { safeLocalStorageSet('w9day_tags', JSON.stringify(tags)); syncToCloud(); }
 
 // Custom tags (anything beyond the 10 built-in ones) are only worth keeping
 // around in the filter list while some outfit still uses them. Called after
