@@ -2197,12 +2197,23 @@ if (window.lucide) lucide.createIcons();
 // device's local cache might look "clean" while the actual cloud row is
 // still huge. Only migrating what's locally inline would miss that case
 // entirely and the cloud row would never actually shrink.
+//
+// NOT gated behind a "ran once" flag anymore: an earlier version marked
+// the whole migration done after a single pass, even if some individual
+// photo uploads failed along the way (a network hiccup, a retry running
+// out) — those items silently stayed as inline base64 forever, since the
+// "done" flag blocked ever retrying them, even though everything still
+// displayed fine locally. Now this just runs every time you sign in; it's
+// cheap once nothing's left to do (the loop below skips any item whose
+// photo is already a Storage URL in a fraction of a second), and any
+// leftover un-migrated photo gets picked up and retried automatically on
+// the very next launch instead of being stuck forever.
 async function compressExistingPhotosOnce() {
-  const alreadyRan = localStorage.getItem('w9day_photos_compressed_v3');
-  if (alreadyRan) return;
+  let migratedAny = false;
 
   for (const item of wardrobe) {
     if (!item.photo || !item.photo.startsWith('data:')) continue; // already a Storage URL, or no photo
+    migratedAny = true;
     try {
       const compressed = item.photo.length > 200000 ? await compressImage(item.photo, 800) : item.photo;
       const url = await uploadPhotoToStorage(compressed, item.id);
@@ -2211,7 +2222,7 @@ async function compressExistingPhotosOnce() {
       } else {
         // Couldn't upload right now (offline, etc.) — at least keep the
         // compressed version inline so it's smaller than before, and this
-        // item will get picked up and offloaded on a future run.
+        // item will get picked up and retried automatically next launch.
         item.photo = compressed;
       }
     } catch (err) {
@@ -2219,9 +2230,10 @@ async function compressExistingPhotosOnce() {
     }
   }
 
-  localStorage.setItem('w9day_photos_compressed_v3', 'true');
-  saveWardrobe(wardrobe); // unconditional: overwrites the cloud row with this (now guaranteed-small) copy
-  renderWardrobe();
+  if (migratedAny) {
+    saveWardrobe(wardrobe); // pushes the now-smaller copy to the cloud
+    renderWardrobe();
+  }
 }
 /* =========================================================
    CLOUD SYNC (Supabase)
