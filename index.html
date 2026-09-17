@@ -2198,8 +2198,28 @@ async function withRetries(fn, attempts = 6, baseDelayMs = 1000) {
 // Pushes the current in-memory wardrobe/outfits/tags up to your account's
 // single row in the wardrobe_data table. Safe to call often — it's a
 // simple "replace with the current state" upsert, not an incremental diff.
+//
+// IMPORTANT: only one upload is ever allowed to be in flight at once. If
+// several saves happen in quick succession (e.g. adding a bunch of items
+// back to back), each one used to fire its own network request right away —
+// and since network timing isn't guaranteed, an OLDER request could
+// sometimes finish AFTER a newer one, silently overwriting the newer data
+// with a stale snapshot. That's what caused "the items I uploaded last
+// disappear". Now, if a sync is already running, we just flag that another
+// one is needed and let the in-flight one finish first; when it's done we
+// immediately kick off one more sync, which — because it reads wardrobe/
+// outfits/tags fresh at that moment — always carries the latest state.
+// This keeps every upload strictly in order, one at a time.
+let syncInFlight = false;
+let syncPending = false;
+
 async function syncToCloud() {
   if (!currentUser || !cloudSyncReady) return;
+  if (syncInFlight) {
+    syncPending = true;
+    return;
+  }
+  syncInFlight = true;
   try {
     const { error } = await withRetries(() => sb.from('wardrobe_data').upsert({
       user_id: currentUser.id,
@@ -2216,6 +2236,12 @@ async function syncToCloud() {
   } catch (err) {
     console.error('Cloud sync failed:', err);
     showCloudBanner('Could not save to the cloud: ' + (err.message || err));
+  } finally {
+    syncInFlight = false;
+    if (syncPending) {
+      syncPending = false;
+      syncToCloud(); // a newer save happened while we were uploading — send the latest state now
+    }
   }
 }
 
